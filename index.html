@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>US Counties Directory</title>
+  <style>
+    :root{--accent:#0b84ff;--bg:#0f1720;--card:#0b1220;--muted:#9aa6b2}
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Roboto,'Helvetica Neue',Arial;background:linear-gradient(180deg,#071025 0%, #07162b 100%);color:#e6eef6}
+    header{display:flex;align-items:center;gap:16px;padding:18px 22px;border-bottom:1px solid rgba(255,255,255,0.03)}
+    h1{font-size:18px;margin:0}
+    .container{display:grid;grid-template-columns:380px 1fr;gap:18px;padding:18px}
+    .panel{background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));padding:12px;border-radius:12px;box-shadow:0 6px 18px rgba(2,6,23,0.6)}
+    .sidebar{height:78vh;display:flex;flex-direction:column}
+    .controls{display:flex;gap:8px;margin-bottom:8px}
+    input,select{padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);background:transparent;color:inherit;outline:none}
+    .list{overflow:auto;flex:1;padding:6px;border-radius:8px;border:1px solid rgba(255,255,255,0.02);margin-top:6px}
+    .item{padding:8px;border-radius:8px;margin:6px 4px;cursor:pointer}
+    .item:hover{background:rgba(255,255,255,0.02)}
+    .item.selected{background:linear-gradient(90deg,var(--accent),#6ad1ff);color:#05222e}
+    .details{padding:14px;height:78vh;overflow:auto}
+    .meta{display:flex;flex-wrap:wrap;gap:12px;margin-top:8px}
+    .chip{background:rgba(255,255,255,0.03);padding:8px;border-radius:8px}
+    .big{font-size:20px;font-weight:700}
+    footer{padding:12px;text-align:center;color:var(--muted);font-size:13px}
+    .loader{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,0.12);border-top-color:var(--accent);border-radius:50%;animation:spin .9s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .hint{color:var(--muted);font-size:13px}
+    @media (max-width:880px){.container{grid-template-columns:1fr;}.sidebar{height:auto}.details{height:auto}}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>US Counties Directory</h1>
+    <div class="hint">Browse every county/county-equivalent — population, founding date, area and links.</div>
+  </header>
+  <div class="container">
+    <aside class="panel sidebar">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div style="display:flex;gap:8px;align-items:center">
+          <strong>Counties</strong>
+          <small style="color:var(--muted);font-size:13px">(via US Census)</small>
+        </div>
+        <button id="reloadBtn" title="Reload list" style="background:transparent;border:0;color:var(--accent);cursor:pointer">Reload</button>
+      </div>
+
+      <div class="controls" style="margin-top:10px">
+        <input id="search" placeholder="Search county or state..." />
+        <select id="stateFilter">
+          <option value="">All states</option>
+        </select>
+      </div>
+
+      <div class="list panel" id="countyList">
+        <div class="hint">Loading counties <span class="loader"></span></div>
+      </div>
+    </aside>
+
+    <main class="panel details" id="details">
+      <div id="detailsInner">
+        <h2 style="margin-top:4px">Select a county</h2>
+        <div class="hint">Click a county on the left. This demo pulls names & FIPS from the US Census API and then queries population and Wikipedia for founding details.</div>
+      </div>
+    </main>
+  </div>
+  <footer>Note: CORS and API limits may affect data. Some founding dates are not available or have multiple 'established' terms.</footer>
+
+  <script>
+    // Single-file US Counties Directory
+    // Behavior:
+    // 1. Fetch county names + FIPS from the US Census API (2020 Decennial). If CORS blocked, user will need to run from a server or enable CORS.
+    // 2. Populate state filter + searchable list.
+    // 3. When county clicked, fetch population for that county (2020 decennial) and query Wikipedia to extract founding/established dates from the infobox.
+
+    const countyListEl = document.getElementById('countyList');
+    const stateFilterEl = document.getElementById('stateFilter');
+    const searchEl = document.getElementById('search');
+    const detailsEl = document.getElementById('detailsInner');
+    const reloadBtn = document.getElementById('reloadBtn');
+
+    let counties = []; // {name, state, county, state_fips}
+    let selectedId = null;
+
+    // Helper: show small message in list
+    function showListMessage(msg){ countyListEl.innerHTML = '<div class="hint">'+msg+'</div>'; }
+
+    function safeText(str){ if(!str) return ''; return String(str).replace(/[<>]/g,''); }
+
+    async function fetchCountyList(){
+      showListMessage('Loading counties <span class="loader"></span>');
+      try{
+        // US Census API: decennial 2020, retrieve NAME and fips
+        // Endpoint: https://api.census.gov/data/2020/dec/pl?get=NAME&for=county:*
+        const url = 'https://api.census.gov/data/2020/dec/pl?get=NAME&for=county:*';
+        const res = await fetch(url);
+        if(!res.ok) throw new Error('Census API error: '+res.status);
+        const data = await res.json();
+        // first row is header
+        const rows = data.slice(1);
+        counties = rows.map(r=>{
+          // r[0] = NAME like "Los Angeles County, California"
+          const name = r[0];
+          const county = r[2]; // county FIPS
+          const state_fips = r[1]; // state FIPS
+          // try split name into 'X County' and state
+          const parts = name.split(',').map(s=>s.trim());
+          const cName = parts[0];
+          const state = parts[1] || '';
+          return {name:cName, fullName:name, state, county, state_fips};
+        });
+        populateStateFilter();
+        renderList();
+      }catch(err){
+        console.error(err);
+        showListMessage('Could not load counties from Census API. Error: '+safeText(err.message)+'.\nYou can still search if you provide a local counties JSON.');
+      }
+    }
+
+    function populateStateFilter(){
+      const states = Array.from(new Set(counties.map(c=>c.state))).sort();
+      stateFilterEl.innerHTML = '<option value="">All states</option>' + states.map(s=>`<option value="${s}">${s}</option>`).join('');
+    }
+
+    function renderList(){
+      const q = (searchEl.value||'').toLowerCase();
+      const state = stateFilterEl.value;
+      const filtered = counties.filter(c=>{
+        if(state && c.state !== state) return false;
+        if(!q) return true;
+        return (c.name + ' ' + c.state + ' ' + c.fullName).toLowerCase().includes(q);
+      }).sort((a,b)=>a.name.localeCompare(b.name));
+
+      if(filtered.length===0){ showListMessage('No counties match that query.'); return; }
+
+      countyListEl.innerHTML = '';
+      for(const c of filtered){
+        const div = document.createElement('div');
+        div.className = 'item' + (selectedId === c.state_fips + '-' + c.county ? ' selected' : '');
+        div.innerHTML = `<div style="font-weight:600">${safeText(c.name)}</div><div style="font-size:12px;color:var(--muted)">${safeText(c.state)}</div>`;
+        div.addEventListener('click', ()=> selectCounty(c));
+        countyListEl.appendChild(div);
+      }
+    }
+
+    async function selectCounty(c){
+      selectedId = c.state_fips + '-' + c.county;
+      renderList();
+      detailsEl.innerHTML = '<h2>'+safeText(c.name)+', '+safeText(c.state)+'</h2><div class="hint">Loading population & founding info <span class="loader"></span></div>';
+      try{
+        const [pop, wiki] = await Promise.all([fetchPopulation(c), fetchCountyWikiInfo(c)]);
+        renderDetails(c, pop, wiki);
+      }catch(err){
+        console.error(err);
+        detailsEl.innerHTML = '<h2>'+safeText(c.name)+', '+safeText(c.state)+'</h2><div class="hint">Error loading details: '+safeText(err.message)+'</div>';
+      }
+    }
+
+    async function fetchPopulation(c){
+      // Query 2020 decennial for P1_001N (total population). If variable not available, the API will error.
+      // We'll request: https://api.census.gov/data/2020/dec/pl?get=P1_001N&for=county:COUNTY&in=state:STATE
+      const url = `https://api.census.gov/data/2020/dec/pl?get=P1_001N&for=county:${encodeURIComponent(c.county)}&in=state:${encodeURIComponent(c.state_fips)}`;
+      const res = await fetch(url);
+      if(!res.ok) throw new Error('Population request failed: '+res.status);
+      const data = await res.json();
+      // e.g. [['P1_001N','state','county'],['10039107','06','037']]
+      if(data && data[1] && data[1][0]) return {population: data[1][0]};
+      return {population: 'N/A'};
+    }
+
+    // Wikipedia fetching: try to find a page for "<County name> County, <State>" or variations; then parse the infobox for Founded/Established/Incorporated
+    async function fetchCountyWikiInfo(c){
+      const queryNames = [
+        `${c.name} County, ${c.state}`,
+        `${c.name}, ${c.state}`,
+        `${c.name} County`
+      ];
+
+      // Use Wikimedia API opensearch to find the best page
+      for(const q of queryNames){
+        try{
+          const searchUrl = 'https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch='+encodeURIComponent(q)+'&format=json&utf8=1&origin=*';
+          const sres = await fetch(searchUrl);
+          if(!sres.ok) continue;
+          const sjson = await sres.json();
+          const hits = sjson.query && sjson.query.search;
+          if(hits && hits.length>0){
+            const title = hits[0].title;
+            // fetch parsed HTML of the page so we can inspect the infobox
+            const pageUrl = 'https://en.wikipedia.org/w/api.php?action=parse&page='+encodeURIComponent(title)+'&format=json&prop=text&origin=*';
+            const pres = await fetch(pageUrl);
+            if(!pres.ok) continue;
+            const pjson = await pres.json();
+            const html = pjson.parse && pjson.parse.text && pjson.parse.text['*'];
+            if(html){
+              // Try to extract the infobox and then find Established/Founded/Founded date text
+              const founded = extractFoundedFromInfobox(html);
+              const area = extractAreaFromInfobox(html);
+              return {wikiTitle:title, founded, area, pageUrl: 'https://en.wikipedia.org/wiki/'+encodeURIComponent(title)};
+            }
+          }
+        }catch(err){ console.warn('wiki search err',err); }
+      }
+      return {wikiTitle:null, founded:null, area:null};
+    }
+
+    function extractFoundedFromInfobox(html){
+      // naive DOM parser using regex to find rows with "Founded", "Founded:", "Established", "Founded" key
+      // Note: HTML returned is the page's HTML fragment; this is a heuristic, not perfect.
+      try{
+        // find table class infobox
+        const infoboxMatch = html.match(/<table[^>]*class="[^"]*infobox[^"]*"[\s\S]*?<\/table>/i);
+        const infobox = infoboxMatch ? infoboxMatch[0] : html;
+        // look for rows like <th ...>Founded</th>\s*<td ...> ... </td>
+        const keyRegex = /<th[^>]*>\s*(?:Founded|Established|Formed|Organized|Created|Incorporated)\s*<\/th>\s*<td[^>]*>([\s\S]*?)<\/td>/i;
+        const m = infobox.match(keyRegex);
+        if(m && m[1]){
+          const text = m[1].replace(/<[^>]+>/g,'').trim();
+          return normalizeWhitespace(text);
+        }
+        // fallback: look for 'Founded' anywhere
+        const anyMatch = html.match(/(?:Founded|Established|Formed|Organized)[:<\/]?\s*([^<\n]{2,120})/i);
+        if(anyMatch && anyMatch[1]) return normalizeWhitespace(anyMatch[1]);
+      }catch(e){ console.warn('extractFoundedFromInfobox', e); }
+      return null;
+    }
+
+    function extractAreaFromInfobox(html){
+      try{
+        const infoboxMatch = html.match(/<table[^>]*class="[^"]*infobox[^"]*"[\s\S]*?<\/table>/i);
+        const infobox = infoboxMatch ? infoboxMatch[0] : html;
+        const areaRegex = /<th[^>]*>\s*(?:Area|Total area)\s*<\/th>\s*<td[^>]*>([\s\S]*?)<\/td>/i;
+        const m = infobox.match(areaRegex);
+        if(m && m[1]){
+          const text = m[1].replace(/<[^>]+>/g,'').trim();
+          return normalizeWhitespace(text);
+        }
+      }catch(e){ console.warn('extractAreaFromInfobox', e); }
+      return null;
+    }
+
+    function normalizeWhitespace(s){ return s.replace(/\s+/g,' ').replace(/\[.*?\]/g,'').trim(); }
+
+    function renderDetails(c, popInfo, wikiInfo){
+      const pop = popInfo && popInfo.population ? Number(popInfo.population).toLocaleString() : 'N/A';
+      const founded = wikiInfo && wikiInfo.founded ? wikiInfo.founded : 'Not found';
+      const area = wikiInfo && wikiInfo.area ? wikiInfo.area : 'Not found';
+      const wikiLink = wikiInfo && wikiInfo.wikiTitle ? `<a href="${wikiInfo.pageUrl}" target="_blank">${safeText(wikiInfo.wikiTitle)}</a>` : '—';
+
+      detailsEl.innerHTML = `
+        <h2>${safeText(c.name)}, ${safeText(c.state)}</h2>
+        <div class="meta">
+          <div class="chip"><div class="hint">Population (2020)</div><div class="big">${pop}</div></div>
+          <div class="chip"><div class="hint">Founded / Established</div><div>${safeText(founded)}</div></div>
+          <div class="chip"><div class="hint">Area (from Wikipedia)</div><div>${safeText(area)}</div></div>
+          <div class="chip"><div class="hint">Wikipedia</div><div>${wikiLink}</div></div>
+        </div>
+
+        <section style="margin-top:14px">
+          <h3 style="margin:0 0 8px 0">More</h3>
+          <p class="hint">Other available info: you can extend this demo to fetch economic data, demographic breakdowns, timezone, county seat, and more by querying Census/ACS or Wikidata.</p>
+          <pre style="background:rgba(0,0,0,0.25);padding:10px;border-radius:8px;color:var(--muted);font-size:13px;overflow:auto">State FIPS: ${c.state_fips}\nCounty FIPS: ${c.county}\nFull name: ${safeText(c.fullName)}</pre>
+        </section>
+      `;
+    }
+
+    // UI wiring
+    searchEl.addEventListener('input', renderList);
+    stateFilterEl.addEventListener('change', renderList);
+    reloadBtn.addEventListener('click', ()=>{ fetchCountyList(); });
+
+    // initial load
+    fetchCountyList();
+
+    // Optional: expose a small helper for users to load a local JSON
+    window.loadLocalCounties = function(json){
+      // json should be an array of objects: {name, state, county, state_fips, fullName}
+      if(Array.isArray(json)){
+        counties = json;
+        populateStateFilter();
+        renderList();
+      }else alert('Invalid counties JSON');
+    }
+  </script>
+</body>
+</html>
