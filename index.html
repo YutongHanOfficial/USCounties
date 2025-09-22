@@ -229,7 +229,7 @@
       try{
         const infoboxMatch = html.match(/<table[^>]*class="[^"]*infobox[^"]*"[\s\S]*?<\/table>/i);
         const infobox = infoboxMatch ? infoboxMatch[0] : html;
-        const areaRegex = /<th[^>]*>\s*(?:Seat)\s*<\/th>\s*<td[^>]*>([\s\S]*?)<\/td>/i;
+        const areaRegex = /<th[^>]*>\s*(?:Area)\s*<\/th>\s*<td[^>]*>([\s\S]*?)<\/td>/i;
         const m = infobox.match(areaRegex);
         if(m && m[1]){
           const text = m[1].replace(/<[^>]+>/g,'').trim();
